@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="lt"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Veido būgnai</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#0f1218;color:#fff;font-family:-apple-system,Segoe UI,sans-serif;overflow:hidden}
+#stage{position:fixed;inset:0}
+video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);background:#000}
+#top{position:fixed;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top,0px) + 8px) 12px 18px;background:linear-gradient(#000d 70%,#0000);font-size:12px}
+#bname{font-size:16px;font-weight:800;margin-top:6px}
+#bhow{opacity:.9;margin:2px 0 6px;line-height:1.35}
+#counts,#grid{display:grid;gap:2px}
+#counts{grid-template-columns:repeat(4,1fr);text-align:left;opacity:.7;font-size:11px;margin-bottom:2px}
+#grid{grid-template-columns:repeat(16,1fr)}
+.cell{aspect-ratio:1;border-radius:5px;background:#ffffff22;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#111;transition:transform .06s}
+.cell:nth-child(4n+1):not(:first-child){margin-left:4px}
+.cell.now{outline:2px solid #fff;transform:scale(1.3);z-index:1}
+#ctl{display:flex;gap:12px;align-items:center;margin-top:8px}
+#fx{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+#top,#pads,#bar{z-index:2}
+#ctl{flex-wrap:wrap}
+#rand,#mask{padding:8px 14px;border:0;border-radius:18px;background:#ff8a3d;color:#111;font-weight:800;font-size:13px}
+#meters{opacity:.8;font-variant-numeric:tabular-nums}
+#pads{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:10px 10px calc(env(safe-area-inset-bottom,0px) + 75px)}
+.pad{border-radius:14px;background:#ffffff22;backdrop-filter:blur(6px);padding:12px 4px;text-align:center;font-size:12px;font-weight:700;transition:transform .08s,background .08s}
+.pad span{display:block;font-size:26px}
+.pad.hit{background:#ff8a3d;color:#111;transform:scale(1.12)}
+#bar{position:fixed;left:0;right:0;bottom:0;padding:8px 14px calc(env(safe-area-inset-bottom,0px) + 10px);display:flex;flex-direction:column;gap:6px;font-size:12px;background:#000a}
+.row{display:flex;gap:10px;align-items:center}.row label{width:84px}
+#bar input{flex:1}
+#start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#0f1218;text-align:center;padding:24px;z-index:5}
+#start button{padding:16px 34px;border:0;border-radius:30px;background:#ff8a3d;color:#111;font-size:18px;font-weight:800}
+#msg{opacity:.75;font-size:13px;max-width:320px}
+</style></head><body>
+<div id="start">
+  <h1 style="margin:0">🥁 Veido būgnai</h1>
+  <div id="msg">Atidaryk burną = bosinis · Mirktelėk = mažasis · Pakelk antakius = hi-hat · Šypsokis = crash.<br>Padidink garsą ir išjunk begarsį režimą.</div>
+  <button id="startBtn">Pradėti</button>
+</div>
+<div id="stage"><video id="v" playsinline muted></video></div>
+<canvas id="fx"></canvas>
+<div id="top"><div id="status">Kraunama…</div><div id="meters"></div>
+  <div id="bname"></div><div id="bhow"></div>
+  <div id="counts"><span>1</span><span>2</span><span>3</span><span>4</span></div>
+  <div id="grid"></div>
+  <div id="ctl"><button id="rand">🎲 Atsitiktinis ritmas</button><label><input type="checkbox" id="guide" checked> Groti kartu (pagalba)</label></div>
+</div>
+<div id="pads">
+  <div class="pad" id="p-kick"><span>😮</span>BOSINIS</div>
+  <div class="pad" id="p-snare"><span>😉</span>MAŽASIS</div>
+  <div class="pad" id="p-hat"><span>🤨</span>HI-HAT</div>
+  <div class="pad" id="p-crash"><span>😄</span>CRASH</div>
+</div>
+<div id="bar"><div class="row"><label for="sens">Jautrumas</label><input id="sens" type="range" min="0.5" max="1.6" step="0.05" value="1"></div></div>
+<script type="module">
+import {FaceLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+const WASM="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODEL="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+const $=id=>document.getElementById(id), status=$("status"), meters=$("meters"), video=$("v"), sens=$("sens");
+let ctx, noise;
+function initAudio(){
+  ctx=new (window.AudioContext||window.webkitAudioContext)();
+  noise=ctx.createBuffer(1,ctx.sampleRate,ctx.sampleRate);
+  const d=noise.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+  const b=ctx.createBuffer(1,1,22050), s=ctx.createBufferSource(); s.buffer=b; s.connect(ctx.destination); s.start(0); // unlock iOS audio
+}
+function env(g,t,peak,dur){g.gain.setValueAtTime(peak,t);g.gain.exponentialRampToValueAtTime(0.001,t+dur)}
+function noiseHit(freq,dur,peak,d){
+  const t=ctx.currentTime, s=ctx.createBufferSource(), f=ctx.createBiquadFilter(), g=ctx.createGain();
+  s.buffer=noise; f.type="highpass"; f.frequency.value=freq; s.connect(f); f.connect(g); g.connect(d);
+  env(g,t,peak,dur); s.start(t); s.stop(t+dur+0.05);
+}
+const sounds={
+  kick(d){const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();o.type="sine";
+    o.frequency.setValueAtTime(160,t);o.frequency.exponentialRampToValueAtTime(40,t+0.15);
+    o.connect(g);g.connect(d);env(g,t,1,0.4);o.start(t);o.stop(t+0.45)},
+  snare(d){noiseHit(1200,0.2,0.7,d);const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();
+    o.type="triangle";o.frequency.value=190;o.connect(g);g.connect(d);env(g,t,0.5,0.12);o.start(t);o.stop(t+0.15)},
+  hat(d){noiseHit(7000,0.07,0.5,d)},
+  crash(d){noiseHit(4500,0.9,0.45,d)}
+};
+function play(name,level=1){const g=ctx.createGain();g.gain.value=level;g.connect(ctx.destination);sounds[name](g)}
+
+// ---- Beat library (16 steps = 16th notes; 4 steps per beat). K kick, S snare, H hi-hat, C crash ----
+const BEATS=[
+ {n:"Pradedantiesiems: bosinis ir mažasis",bpm:80,p:"K...S...K...S..."},
+ {n:"Klasikinis roko ritmas",bpm:90,p:"K.H.S.H.K.H.S.H."},
+ {n:"Lėtesnis (half-time) ritmas",bpm:80,p:"K.H.H.H.S.H.H.H."},
+ {n:"Keturi dūžiai (disco / house)",bpm:116,p:"K.H.K.H.K.H.K.H."},
+ {n:"Boom bap (hiphopas)",bpm:88,p:"K.H.S.H.H.K.S.H."},
+ {n:"Stadiono dundėjimas",bpm:100,p:"K...K...S......."},
+ {n:"Fanko ritmas",bpm:96,p:"K.H.S.K.H.K.S.H."},
+ {n:"Pop roko ritmas",bpm:100,p:"K.H.S.H.K.K.S.H."},
+ {n:"Roko ritmas su crash akcentu",bpm:90,p:"C.H.S.H.K.H.S.H."},
+ {n:"Bosinis-bosinis-mažasis supimas",bpm:90,p:"K.H.K.H.S.H.K.H."}
+];
+const NAMES={K:"kick",S:"snare",H:"hat",C:"crash"}, COL={K:"#ff8a3d",S:"#4cc9f0",H:"#b5e48c",C:"#f72585"};
+const WHO={K:"Bosinis (atidaryk burną)",S:"Mažasis (mirktelėk)",H:"Hi-hat (antakiai)",C:"Crash (šypsena)"}, DISP={K:"B",S:"M",H:"H",C:"C"};
+function stepLabel(i){const b=Math.floor(i/4)+1,r=i%4;return r===0?""+b:r===2?b+"&":b+(r===1?"e":"a")}
+const grid=$("grid"); const cells=[];
+for(let i=0;i<16;i++){const c=document.createElement("div");c.className="cell";grid.appendChild(c);cells.push(c)}
+let beat=BEATS[0], curBeat=-1, deck=[], t0=0, curStep=-1, prevCell=null;
+function setBeat(i){
+  curBeat=i; beat=BEATS[i];
+  $("bname").textContent=beat.n+" · "+beat.bpm+" BPM";
+  const by={}; for(let k=0;k<16;k++){const ch=beat.p[k]; if(ch!=="."){(by[ch]=by[ch]||[]).push(stepLabel(k))}}
+  $("bhow").textContent=Object.keys(by).map(ch=>WHO[ch]+": "+by[ch].join(", ")).join("  |  ")+"  — skaičiuok 1 & 2 & 3 & 4 &";
+  cells.forEach((c,k)=>{const ch=beat.p[k]; c.textContent=ch==="."?"":DISP[ch]; c.style.background=ch==="."?"":COL[ch]});
+  if(ctx){t0=ctx.currentTime+0.4} curStep=-1;
+}
+function nextBeat(){
+  if(!deck.length){deck=BEATS.map((_,i)=>i).sort(()=>Math.random()-0.5)}
+  if(deck.length>1&&deck[deck.length-1]===curBeat) deck.unshift(deck.pop());
+  setBeat(deck.pop());
+}
+$("rand").onclick=nextBeat;
+function tick(){
+  if(!ctx) return;
+  const sd=60/beat.bpm/4, s=Math.floor((ctx.currentTime-t0)/sd);
+  if(s<0||s===curStep) return;
+  curStep=s; const i=s%16;
+  if(prevCell) prevCell.classList.remove("now");
+  prevCell=cells[i]; prevCell.classList.add("now");
+  const ch=beat.p[i];
+  if(ch!=="." && $("guide").checked) play(NAMES[ch],0.3);
+}
+nextBeat();
+
+// base thresholds, divided by sensitivity
+const pads=[
+  {id:"kick",lab:"bosinis", sound:"kick", val:b=>b.jawOpen, on:0.45},
+  {id:"snare",lab:"mažasis",sound:"snare",val:b=>(b.eyeBlinkLeft+b.eyeBlinkRight)/2, on:0.35},
+  {id:"hat",lab:"hi-hat",  sound:"hat",  val:b=>Math.max(b.browInnerUp, (b.browOuterUpLeft+b.browOuterUpRight)/2), on:0.55},
+  {id:"crash",lab:"crash",sound:"crash",val:b=>(b.mouthSmileLeft+b.mouthSmileRight)/2 - b.jawOpen*0.5, on:0.55}
+].map(p=>({...p,armed:true,last:0}));
+function fire(p){
+  play(p.sound,1); flash[p.sound]=performance.now();
+  const el=$("p-"+p.id); el.classList.add("hit"); setTimeout(()=>el.classList.remove("hit"),130);
+  if(navigator.vibrate) navigator.vibrate(10);
+}
+// ---- Face mask overlay (drawn on a canvas over the video) ----
+const fx=$("fx"), g2=fx.getContext("2d"); let dpr=1;
+function resize(){dpr=window.devicePixelRatio||1;fx.width=innerWidth*dpr;fx.height=innerHeight*dpr;g2.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener("resize",resize); resize();
+const flash={kick:0,snare:0,hat:0,crash:0}, LED=[["kick","#ff8a3d"],["snare","#4cc9f0"],["hat","#b5e48c"],["crash","#f72585"]];
+const glow=n=>Math.max(0,1-(performance.now()-flash[n])/280);
+function rr(x,y,w,h,r){g2.beginPath(); if(g2.roundRect) g2.roundRect(x,y,w,h,r); else g2.rect(x,y,w,h)}
+function drawDrummer(P,d,ang){
+  const up={x:Math.sin(ang),y:-Math.cos(ang)}, hg=glow("hat");
+  g2.lineCap="round";
+  for(const [o,i] of [[70,107],[300,336]]){ // drumsticks sitting on the eyebrows, lifting when you raise them
+    const O=P(o), I=P(i), ex=I.x-O.x, ey=I.y-O.y, off=0.04*d+0.2*d*hg;
+    const s0={x:O.x-ex*0.45+up.x*off,y:O.y-ey*0.45+up.y*off}, e0={x:I.x+ex*0.3+up.x*off,y:I.y+ey*0.3+up.y*off};
+    g2.beginPath(); g2.moveTo(s0.x,s0.y); g2.lineTo(e0.x,e0.y);
+    g2.strokeStyle="#7a4a1e"; g2.lineWidth=0.085*d; g2.stroke();
+    g2.strokeStyle="#e0a96d"; g2.lineWidth=0.055*d; g2.stroke();
+    g2.beginPath(); g2.arc(e0.x,e0.y,0.075*d,0,7); g2.fillStyle="#f1c38a"; g2.fill();
+    g2.strokeStyle="#7a4a1e"; g2.lineWidth=0.02*d; g2.stroke();
+    if(hg>0){g2.beginPath(); g2.arc(e0.x,e0.y,0.075*d,0,7); g2.fillStyle="#b5e48c"; g2.globalAlpha=hg*0.8; g2.fill(); g2.globalAlpha=1}
+  }
+  // snare drum under the chin, following the head
+  const ch=P(152), c={x:ch.x-up.x*0.3*d,y:ch.y-up.y*0.3*d};
+  const gs=glow("snare"), gk=glow("kick"), hit=Math.max(gs,gk), hc=gk>gs?"#ff8a3d":"#4cc9f0";
+  g2.save(); g2.translate(c.x,c.y); g2.rotate(ang); g2.scale(d,d*(1-0.1*hit));
+  const R=0.62,H=0.38,E=0.15;
+  const gr=g2.createLinearGradient(-R,0,R,0); gr.addColorStop(0,"#7a0c14"); gr.addColorStop(0.5,"#e63946"); gr.addColorStop(1,"#7a0c14");
+  g2.beginPath(); g2.moveTo(-R,-H/2); g2.lineTo(-R,H/2); g2.ellipse(0,H/2,R,E,0,Math.PI,0,true); g2.lineTo(R,-H/2); g2.closePath();
+  g2.fillStyle=gr; g2.fill(); g2.strokeStyle="#c9ced6"; g2.lineWidth=0.03; g2.stroke();
+  g2.strokeStyle="rgba(225,228,235,0.85)"; g2.lineWidth=0.02;
+  for(let k=-3;k<=3;k++){g2.beginPath(); g2.moveTo(k*0.16,-H/2+0.04); g2.lineTo(k*0.16,H/2+0.02); g2.stroke()}
+  g2.beginPath(); g2.ellipse(0,-H/2,R,E,0,0,Math.PI*2); g2.fillStyle="#f6f6f2"; g2.fill();
+  if(hit>0){g2.fillStyle=hc; g2.globalAlpha=hit*0.55; g2.fill(); g2.globalAlpha=1}
+  g2.strokeStyle="#c9ced6"; g2.lineWidth=0.035; g2.stroke();
+  if(hit>0){g2.beginPath(); const k=1+0.3*(1-hit); g2.ellipse(0,-H/2,R*k,E*k,0,0,Math.PI*2); g2.strokeStyle="#fff"; g2.globalAlpha=hit; g2.lineWidth=0.02; g2.stroke(); g2.globalAlpha=1}
+  g2.restore();
+}
+function drawMask(lm){
+  g2.clearRect(0,0,innerWidth,innerHeight);
+  if(!lm||!video.videoWidth) return;
+  const vw=video.videoWidth, vh=video.videoHeight, cw=innerWidth, ch=innerHeight;
+  const sc=Math.max(cw/vw,ch/vh), ox=(cw-vw*sc)/2, oy=(ch-vh*sc)/2;
+  const P=i=>({x:ox+(1-lm[i].x)*vw*sc, y:oy+lm[i].y*vh*sc});
+  let A=P(33), B=P(263); if(A.x>B.x){const t=A;A=B;B=t}
+  drawDrummer(P,Math.hypot(B.x-A.x,B.y-A.y),Math.atan2(B.y-A.y,B.x-A.x));
+}
+let landmarker, lastT=-1;
+function loop(){
+  tick();
+  if(video.readyState>=2 && video.currentTime!==lastT){
+    lastT=video.currentTime;
+    const r=landmarker.detectForVideo(video,performance.now());
+    const cats=r.faceBlendshapes&&r.faceBlendshapes[0]&&r.faceBlendshapes[0].categories;
+    if(cats){
+      const b={}; for(const c of cats) b[c.categoryName]=c.score;
+      const now=performance.now(), k=parseFloat(sens.value);
+      const shown=[];
+      for(const p of pads){
+        const v=p.val(b), th=p.on/k;
+        shown.push(p.lab+" "+v.toFixed(2));
+        if(v>th && p.armed && now-p.last>220){fire(p);p.armed=false;p.last=now}
+        else if(v<th*0.6) p.armed=true;
+      }
+      meters.textContent=shown.join("  ·  ");
+      drawMask(r.faceLandmarks&&r.faceLandmarks[0]);
+      status.textContent="Veidas aptiktas – groji!";
+    } else {g2.clearRect(0,0,innerWidth,innerHeight); status.textContent="Veidas nerastas – atsisuk į kamerą ir pasirūpink geru apšvietimu"}
+  }
+  requestAnimationFrame(loop);
+}
+$("startBtn").onclick=async()=>{
+  $("startBtn").disabled=true; $("msg").textContent="Kraunamas veido sekimas (reikia interneto)…";
+  try{
+    initAudio();
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:640},height:{ideal:480}},audio:false});
+    video.srcObject=stream; await video.play();
+    const fs=await FilesetResolver.forVisionTasks(WASM);
+    const opts=g=>({baseOptions:{modelAssetPath:MODEL,delegate:g},runningMode:"VIDEO",outputFaceBlendshapes:true,numFaces:1});
+    try{landmarker=await FaceLandmarker.createFromOptions(fs,opts("GPU"))}
+    catch(e){landmarker=await FaceLandmarker.createFromOptions(fs,opts("CPU"))}
+    $("start").style.display="none"; t0=ctx.currentTime+0.6; curStep=-1; loop();
+  }catch(e){
+    $("msg").textContent="Nepavyko paleisti: "+(e.message||e)+". Leisk naudoti kamerą ir atidaryk puslapį per https Safari naršyklėje.";
+    $("startBtn").disabled=false;
+  }
+};
+</script></body></html>
