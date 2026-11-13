@@ -44,7 +44,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);background:#0
   <div id="bname"></div><div id="bhow"></div>
   <div id="counts"><span>1</span><span>2</span><span>3</span><span>4</span></div>
   <div id="grid"></div>
-  <div id="ctl"><button id="rand">🎲 Atsitiktinis ritmas</button><label><input type="checkbox" id="guide" checked> Groti kartu (pagalba)</label></div>
+  <div id="ctl"><button id="rand">🎲 Atsitiktinis ritmas</button><label><input type="checkbox" id="guide"> Groti kartu (pagalba)</label></div>
 </div>
 <div id="pads">
   <div class="pad" id="p-kick"><span>😮</span>BOSINIS</div>
@@ -84,6 +84,7 @@ function play(name,level=1){const g=ctx.createGain();g.gain.value=level;g.connec
 
 // ---- Beat library (16 steps = 16th notes; 4 steps per beat). K kick, S snare, H hi-hat, C crash ----
 const BEATS=[
+ {n:"Paprasčiausias: tik bosinis",bpm:70,p:"K...K...K...K..."},
  {n:"Pradedantiesiems: bosinis ir mažasis",bpm:80,p:"K...S...K...S..."},
  {n:"Klasikinis roko ritmas",bpm:90,p:"K.H.S.H.K.H.S.H."},
  {n:"Lėtesnis (half-time) ritmas",bpm:80,p:"K.H.H.H.S.H.H.H."},
@@ -125,7 +126,7 @@ function tick(){
   const ch=beat.p[i];
   if(ch!=="." && $("guide").checked) play(NAMES[ch],0.3);
 }
-nextBeat();
+setBeat(0);
 
 // base thresholds, divided by sensitivity
 const pads=[
